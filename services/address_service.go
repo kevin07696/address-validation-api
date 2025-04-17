@@ -3,13 +3,14 @@ package services
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"math"
 	"regexp"
 	"strings"
 
 	"address-validator/config"
 	"address-validator/ports"
+
+	"go.uber.org/zap"
 )
 
 // Common validation errors
@@ -28,12 +29,12 @@ const earthRadiusMi = 3958.8
 // AddressService handles address validation business logic
 type AddressService struct {
 	validator ports.AddressValidator
-	logger    *slog.Logger
-	config    *config.Config
+	logger    *zap.Logger
+	config    config.MapConfig
 }
 
 // NewAddressService creates a new address service
-func NewAddressService(validator ports.AddressValidator, logger *slog.Logger, config *config.Config) *AddressService {
+func NewAddressService(validator ports.AddressValidator, logger *zap.Logger, config config.MapConfig) *AddressService {
 	return &AddressService{
 		validator: validator,
 		logger:    logger,
@@ -43,13 +44,12 @@ func NewAddressService(validator ports.AddressValidator, logger *slog.Logger, co
 
 // ValidateAddress validates an address
 func (s *AddressService) ValidateAddress(ctx context.Context, address string) (ports.AddressValidationResult, error) {
-	s.logger.Info("validating address in service", "address", address)
 
 	// Sanitize the address
 	cleanAddress := sanitizeAddress(address)
 
 	// Check if address is empty after sanitization
-	if cleanAddress == "" {
+	if cleanAddress == "" || cleanAddress == " " {
 		s.logger.Warn("empty address after sanitization")
 		return ports.AddressValidationResult{
 			IsValid: false,
@@ -57,56 +57,30 @@ func (s *AddressService) ValidateAddress(ctx context.Context, address string) (p
 		}, ErrEmptyAddress
 	}
 
-	// Check for suspicious patterns
-	if isSuspicious(cleanAddress) {
-		s.logger.Warn("suspicious address pattern detected", "address", cleanAddress)
-		return ports.AddressValidationResult{
-			IsValid: false,
-			Error:   ErrSuspiciousPattern.Error(),
-		}, ErrSuspiciousPattern
-	}
-
 	// If validation passes, delegate to the external validator
-	s.logger.Debug("delegating to external validator", "clean_address", cleanAddress)
 	result, err := s.validator.ValidateAddress(ctx, cleanAddress)
 	if err != nil {
 		return result, err
 	}
 
+	s.logger.Debug("Request Completed", zap.Any("result", result))
+
 	// Check if the address is within the geofence
 	if result.IsValid {
-		s.logger.Debug("checking geofence",
-			"lat", result.Latitude,
-			"lng", result.Longitude,
-			"center_lat", s.config.Geofence.CenterLat,
-			"center_lng", s.config.Geofence.CenterLng,
-			"max_distance", s.config.Geofence.MaxDistance,
-			"unit", s.config.Geofence.DistanceUnit)
+		distance := calculateDistance(
+			result.Latitude, result.Longitude,
+			s.config.CenterLat, s.config.CenterLng,
+			s.config.DistanceUnit,
+		)
+		s.logger.Debug("Checking Distance", zap.Float64("distance", distance))
 
-		inRange := s.isWithinGeofence(result.Latitude, result.Longitude)
-		result.InRange = inRange
+		// Check if the distance is less than or equal to the maximum allowed distance
+		result.InRange = distance <= s.config.MaxDistance
+		s.logger.Debug("Checking Distance", zap.Bool("inRange", result.InRange))
 
-		if !inRange {
-			s.logger.Warn("address outside geofence",
-				"lat", result.Latitude,
-				"lng", result.Longitude)
-		}
 	}
 
 	return result, nil
-}
-
-// isWithinGeofence checks if a location is within the configured geofence
-func (s *AddressService) isWithinGeofence(lat, lng float64) bool {
-	// Calculate distance between the point and the center of the geofence
-	distance := calculateDistance(
-		lat, lng,
-		s.config.Geofence.CenterLat, s.config.Geofence.CenterLng,
-		s.config.Geofence.DistanceUnit,
-	)
-
-	// Check if the distance is less than or equal to the maximum allowed distance
-	return distance <= s.config.Geofence.MaxDistance
 }
 
 // calculateDistance calculates the distance between two points using the Haversine formula
@@ -125,7 +99,7 @@ func calculateDistance(lat1, lng1, lat2, lng2 float64, unit string) float64 {
 
 	// Calculate distance based on unit
 	var distance float64
-	if strings.ToLower(unit) == "mi" {
+	if strings.ToLower(unit) == ports.DISTANCE_MILES {
 		distance = earthRadiusMi * c
 	} else {
 		// Default to kilometers
@@ -135,29 +109,17 @@ func calculateDistance(lat1, lng1, lat2, lng2 float64, unit string) float64 {
 	return distance
 }
 
-// sanitizeAddress removes special characters, trims whitespace, and limits length
+// cleaning up spaces and only allowing words, spaces, period, comma, and dash
 func sanitizeAddress(address string) string {
-	// Remove HTML tags and special characters (keep basic address chars)
-	specialCharsPattern := regexp.MustCompile(`[<>{}[\];'"\\]`)
-	cleaned := specialCharsPattern.ReplaceAllString(address, "")
+	// 1. Trim leading/trailing whitespace
+	address = strings.TrimSpace(address)
 
-	// Trim whitespace
-	cleaned = strings.TrimSpace(cleaned)
+	// 2. Collapse multiple spaces into one
+	address = regexp.MustCompile(`\s+`).ReplaceAllString(address, " ")
 
-	// Limit length to 200 characters
-	if len(cleaned) > 200 {
-		cleaned = cleaned[:200]
-	}
+	// 3. Remove potentially dangerous characters
+	//    (keeps alphanumeric, spaces, basic punctuation)
+	address = regexp.MustCompile(`[^\w\s,.-]`).ReplaceAllString(address, "")
 
-	return cleaned
-}
-
-// isSuspicious checks for suspicious patterns in the address
-func isSuspicious(address string) bool {
-	// Check for:
-	// - Excessive repeating chars (aaaaaa)
-	// - Binary/hex patterns
-	// - SQL/JS snippets
-	suspiciousPattern := regexp.MustCompile(`(?i)((.)\2{5}|0x[0-9a-f]+|select\s.+\sfrom|script|alert\(|function|var\s|let\s|const\s)`)
-	return suspiciousPattern.MatchString(address)
+	return address
 }
