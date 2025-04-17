@@ -33,20 +33,27 @@ A secure, containerized webhook service for validating addresses using the Googl
 Create a `.env` file in the root directory with the following variables:
 
 ```
-# Required
-GOOGLE_MAPS_API_KEY=your_api_key_here
+ENVIRONMENT=DEVELOPMENT
+REQUIRE_HTTPS=false
 PORT=8080
 
-# Security (optional)
-REQUIRE_HTTPS=true
+# Rate limiting settings
 RATE_LIMIT_MAX_REQUESTS=10
 RATE_LIMIT_TIME_WINDOW_SECONDS=60
 
-# Geofencing (optional)
-GEOFENCE_MAX_DISTANCE=10
-GEOFENCE_DISTANCE_UNIT=km
-GEOFENCE_CENTER_LAT=40.8448
-GEOFENCE_CENTER_LNG=-73.8648
+# Logger Settings
+LEVEL=DEBUG
+ENCODING=console
+OUTPUT_PATH=stdout
+ERROR_PATH=stdout
+
+
+# Map settings
+GOOGLE_MAPS_API_KEY=your_api_key_here
+MAP_MAX_DISTANCE=2
+MAP_DISTANCE_UNIT=mi
+MAP_CENTER_LAT=40.8313747
+MAP_CENTER_LNG=-73.8272283
 ```
 
 ### Running Locally
@@ -231,30 +238,6 @@ The application uses Docker for containerization:
 - **Volume Mounting**: Securely mounts the `.env` file
 - **Non-root User**: Runs as a non-root user for security
 - **Resource Limits**: Sets CPU and memory limits
-
-## Project Structure
-
-```
-├── .env                  # Environment variables
-├── .gitignore            # Git ignore file
-├── Dockerfile            # Docker configuration
-├── README.md             # Project documentation
-├── docker-compose.yml    # Docker Compose configuration
-├── go.mod                # Go module file
-├── go.sum                # Go module checksums
-├── main.go               # Application entry point
-├── adapters/             # External service adapters
-│   ├── maps_adapter.go   # Google Maps API adapter
-│   └── maps_adapter_test.go # Tests for the adapter
-├── config/               # Configuration
-│   └── config.go         # Configuration loading
-├── handlers/             # HTTP handlers
-│   └── address_validator.go # Address validation handler
-├── ports/                # Interfaces
-│   └── address_validator.go # Address validator interface
-└── services/             # Business logic
-    └── address_service.go # Address validation service
-```
 
 ## License
 

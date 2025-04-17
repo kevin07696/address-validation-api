@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log/slog"
+	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,36 +14,42 @@ import (
 	"address-validator/config"
 	"address-validator/handlers"
 	"address-validator/services"
+
+	"go.uber.org/zap"
 )
 
 func main() {
+	// Load configuration
+	env := config.LoadConfig()
+
+	infraConfig := env.NewInfraConfig()
+
 	// Initialize logger
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
-	slog.SetDefault(logger)
+	loggerConfig := env.NewLoggerConfig(infraConfig.Environment)
+
+	logger, err := config.NewLogger(loggerConfig)
+	if err != nil {
+		log.Fatalf("Failed to implement logger: %v", err)
+	}
 
 	logger.Info("starting address validator service")
 
-	// Load configuration
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		logger.Error("failed to load configuration", "error", err)
-		os.Exit(1)
-	}
-
 	// Create Google Maps adapter
-	mapsAdapter, err := adapters.NewGoogleMapsAdapter(cfg, logger)
+	mapConfig := env.NewMapConfig(logger)
+
+	addressAdapter, err := adapters.NewGoogleAddressValidationAdapter(mapConfig, logger)
 	if err != nil {
-		logger.Error("failed to create Google Maps adapter", "error", err)
+		logger.Error("failed to create Google Address Validation adapter", zap.Error(err))
 		os.Exit(1)
 	}
 
 	// Create address service
-	addressService := services.NewAddressService(mapsAdapter, logger, cfg)
+	addressService := services.NewAddressService(addressAdapter, logger, mapConfig)
 
 	// Create address handler
-	addressHandler := handlers.NewAddressHandler(addressService, cfg, logger)
+	rateLimitConfig := env.NewRateLimitConfig(logger)
+	rateLimiter := handlers.NewRateLimiter(rateLimitConfig)
+	addressHandler := handlers.NewAddressHandler(addressService, rateLimiter, infraConfig, logger)
 
 	// Set up HTTP server
 	mux := http.NewServeMux()
@@ -55,7 +62,7 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:         ":" + cfg.Port,
+		Addr:         fmt.Sprintf(":%d", infraConfig.Port),
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -64,9 +71,9 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		logger.Info("starting HTTP server", "port", cfg.Port)
+		logger.Info("starting HTTP server", zap.Uint16("port", infraConfig.Port))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server error", "error", err)
+			logger.Error("server error", zap.Error(err))
 			os.Exit(1)
 		}
 	}()
@@ -84,7 +91,7 @@ func main() {
 
 	// Doesn't block if no connections, but will otherwise wait until the timeout
 	if err := server.Shutdown(ctx); err != nil {
-		logger.Error("server forced to shutdown", "error", err)
+		logger.Error("server forced to shutdown", zap.Error(err))
 	}
 
 	logger.Info("server exited properly")
